@@ -156,13 +156,13 @@ si cette commande pointe vers une autre version de Zig.
 Exemple :
 
 ```bash
-cd /c/Users/gamme/Desktop/nanocraft-zig
+cd /c/Users/%USERNAME%/Desktop/nanocraft-zig
 ```
 
 Le terminal doit alors ressembler à :
 
 ```text
-Miiforlong@Miiforlong UCRT64 /c/Users/gamme/Desktop/nanocraft-zig
+Miiforlong@Miiforlong UCRT64 /c/Users/%USERNAME%/Desktop/nanocraft-zig
 $
 ```
 
@@ -377,7 +377,7 @@ Il est donc recommandé de lancer le programme depuis le dossier contenant les r
 Depuis PowerShell :
 
 ```powershell
-cd C:\Users\gamme\Desktop\nanocraft-zig
+cd C:\Users\%USERNAME%\Desktop\nanocraft-zig
 ```
 
 Puis :
@@ -441,7 +441,7 @@ ls terrain.png
 Une fois MSYS2, Raylib, GLFW et Zig 0.14.1 installés :
 
 ```bash
-cd /c/Users/gamme/Desktop/nanocraft-zig
+cd /c/Users/%USERNAME%/Desktop/nanocraft-zig
 
 zig-0.14.1/zig.exe version
 
