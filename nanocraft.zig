@@ -10,6 +10,18 @@
 //   - zlib compress/decompress réimplémenté à la main (header zlib 2 octets
 //     + deflate std.compress.flate + adler32) pour ne pas dépendre d'une
 //     API zlib.Compressor pas garantie stable entre versions de Zig
+//
+// FIX (mode Java qui crashait) :
+//   - handleMultiBlockChange lisait "Record Count" comme un u16 fixe alors
+//     que c'est un VarInt en protocole 47 -> désalignement -> lecture hors
+//     bornes -> panic Zig qui tue le thread réseau (et donc la connexion).
+//     La version Python avait le même bug mais ne crashait jamais car TOUT
+//     son parsing réseau est entouré de try/except: pass.
+//   - Toutes les fonctions de parsing de paquets utilisent maintenant des
+//     lecteurs "bounds-safe" (readU8Safe/readI32Safe/etc.) qui retournent
+//     une erreur Zig au lieu de paniquer sur un accès hors bornes. Ces
+//     erreurs remontent jusqu'à playLoop() qui les logue et continue,
+//     exactement comme le comportement Python.
 // ============================================================================
 
 const std = @import("std");
@@ -93,12 +105,56 @@ fn writeString(list: *std.ArrayList(u8), s: []const u8) !void {
 fn readString(alloc: std.mem.Allocator, data: []const u8, offset_in: usize) !struct { value: []u8, offset: usize } {
     const r = try readVarInt(data, offset_in);
     const len: usize = @intCast(r.value);
+    try checkLen(data, r.offset, len);
     const out = try alloc.dupe(u8, data[r.offset .. r.offset + len]);
     return .{ .value = out, .offset = r.offset + len };
 }
 
-fn readAngle(data: []const u8, offset: usize) struct { value: f32, offset: usize } {
-    const v: f32 = @as(f32, @floatFromInt(data[offset])) * 360.0 / 256.0;
+// --- lecteurs "bounds-safe" : retournent une erreur au lieu de paniquer
+// quand le paquet est plus court que prévu (paquet malformé / désaligné) ---
+
+fn checkLen(data: []const u8, off: usize, n: usize) !void {
+    if (off + n > data.len) return error.PacketTooShort;
+}
+
+fn readU8Safe(data: []const u8, off: usize) !u8 {
+    try checkLen(data, off, 1);
+    return data[off];
+}
+
+fn readU16Safe(data: []const u8, off: usize) !u16 {
+    try checkLen(data, off, 2);
+    return std.mem.readInt(u16, data[off..][0..2], .big);
+}
+
+fn readI32Safe(data: []const u8, off: usize) !i32 {
+    try checkLen(data, off, 4);
+    return std.mem.readInt(i32, data[off..][0..4], .big);
+}
+
+fn readU32Safe(data: []const u8, off: usize) !u32 {
+    try checkLen(data, off, 4);
+    return std.mem.readInt(u32, data[off..][0..4], .big);
+}
+
+fn readI64Safe(data: []const u8, off: usize) !i64 {
+    try checkLen(data, off, 8);
+    return std.mem.readInt(i64, data[off..][0..8], .big);
+}
+
+fn readU64Safe(data: []const u8, off: usize) !u64 {
+    try checkLen(data, off, 8);
+    return std.mem.readInt(u64, data[off..][0..8], .big);
+}
+
+fn sliceSafe(data: []const u8, off: usize, n: usize) ![]const u8 {
+    try checkLen(data, off, n);
+    return data[off .. off + n];
+}
+
+fn readAngle(data: []const u8, offset: usize) !struct { value: f32, offset: usize } {
+    const b = try readU8Safe(data, offset);
+    const v: f32 = @as(f32, @floatFromInt(b)) * 360.0 / 256.0;
     return .{ .value = v, .offset = offset + 1 };
 }
 
@@ -378,7 +434,8 @@ fn decodeChunkData18(
     var section_payloads = std.AutoHashMap(u4, []const u8).init(alloc);
     defer section_payloads.deinit();
     for (present_sections.items) |section_y| {
-        try section_payloads.put(section_y, data[offset .. offset + 8192]);
+        const chunk_slice = try sliceSafe(data, offset, 8192);
+        try section_payloads.put(section_y, chunk_slice);
         offset += 8192;
     }
 
@@ -390,7 +447,8 @@ fn decodeChunkData18(
     sy = 0;
     while (sy < 16) : (sy += 1) {
         if (((add_bitmask >> @intCast(sy)) & 1) != 0) {
-            try add_arrays.put(@intCast(sy), data[offset .. offset + 2048]);
+            const add_slice = try sliceSafe(data, offset, 2048);
+            try add_arrays.put(@intCast(sy), add_slice);
             offset += 2048;
         }
     }
@@ -1048,7 +1106,6 @@ const MinecraftJavaClient = struct {
         self.setStatus("In game! Loading chunks...");
         self.level.java_mode = true;
 
-
         var last_pos_send = std.time.milliTimestamp();
 
         while (self.running.load(.seq_cst)) {
@@ -1079,9 +1136,9 @@ const MinecraftJavaClient = struct {
         var off = pk.offset;
         switch (pk.packet_id) {
             0x01 => { // Join Game
-                self.entity_id = std.mem.readInt(i32, pk.data[off..][0..4], .big);
+                self.entity_id = try readI32Safe(pk.data, off);
                 off += 4;
-                self.gamemode = pk.data[off] & 0x7;
+                self.gamemode = (try readU8Safe(pk.data, off)) & 0x7;
                 off += 1;
                 off += 1; // dimension
                 off += 1; // difficulty
@@ -1094,15 +1151,15 @@ const MinecraftJavaClient = struct {
                 try self.sendClientSettings();
             },
             0x08 => { // Player Position And Look
-                const feet_x = @as(f64, @bitCast(std.mem.readInt(u64, pk.data[off..][0..8], .big)));
+                const feet_x = @as(f64, @bitCast(try readU64Safe(pk.data, off)));
                 off += 8;
-                const feet_y = @as(f64, @bitCast(std.mem.readInt(u64, pk.data[off..][0..8], .big)));
+                const feet_y = @as(f64, @bitCast(try readU64Safe(pk.data, off)));
                 off += 8;
-                const feet_z = @as(f64, @bitCast(std.mem.readInt(u64, pk.data[off..][0..8], .big)));
+                const feet_z = @as(f64, @bitCast(try readU64Safe(pk.data, off)));
                 off += 8;
-                const yaw = @as(f32, @bitCast(std.mem.readInt(u32, pk.data[off..][0..4], .big)));
+                const yaw = @as(f32, @bitCast(try readU32Safe(pk.data, off)));
                 off += 4;
-                const pitch = @as(f32, @bitCast(std.mem.readInt(u32, pk.data[off..][0..4], .big)));
+                const pitch = @as(f32, @bitCast(try readU32Safe(pk.data, off)));
                 off += 4;
                 const eyes_y = feet_y + 1.62;
                 self.player.x = feet_x;
@@ -1132,7 +1189,7 @@ const MinecraftJavaClient = struct {
                 self.last_chunk_time.store(std.time.milliTimestamp(), .seq_cst);
             },
             0x06 => { // Update Health
-                const health = @as(f32, @bitCast(std.mem.readInt(u32, pk.data[off..][0..4], .big)));
+                const health = @as(f32, @bitCast(try readU32Safe(pk.data, off)));
                 off += 4;
                 const r = try readVarInt(pk.data, off);
                 off = r.offset;
@@ -1147,7 +1204,7 @@ const MinecraftJavaClient = struct {
             0x22 => try self.handleMultiBlockChange(pk.data, off),
             0x23 => try self.handleBlockChange(pk.data, off),
             0x00 => { // Keep Alive
-                const ka_id = std.mem.readInt(i32, pk.data[off..][0..4], .big);
+                const ka_id = try readI32Safe(pk.data, off);
                 var payload: [4]u8 = undefined;
                 std.mem.writeInt(i32, &payload, ka_id, .big);
                 try self.send(0x00, &payload);
@@ -1171,15 +1228,15 @@ const MinecraftJavaClient = struct {
         const entity_id = r.value;
         if (entity_id == self.entity_id) return;
         off += 16; // uuid
-        const x = @as(f64, @floatFromInt(std.mem.readInt(i32, data[off..][0..4], .big))) / 32.0;
+        const x = @as(f64, @floatFromInt(try readI32Safe(data, off))) / 32.0;
         off += 4;
-        const y = @as(f64, @floatFromInt(std.mem.readInt(i32, data[off..][0..4], .big))) / 32.0;
+        const y = @as(f64, @floatFromInt(try readI32Safe(data, off))) / 32.0;
         off += 4;
-        const z = @as(f64, @floatFromInt(std.mem.readInt(i32, data[off..][0..4], .big))) / 32.0;
+        const z = @as(f64, @floatFromInt(try readI32Safe(data, off))) / 32.0;
         off += 4;
-        const yawr = readAngle(data, off);
+        const yawr = try readAngle(data, off);
         off = yawr.offset;
-        const pitchr = readAngle(data, off);
+        const pitchr = try readAngle(data, off);
         off = pitchr.offset;
 
         self.entity_lock.lock();
@@ -1205,18 +1262,18 @@ const MinecraftJavaClient = struct {
         var off = off_in;
         const r = try readVarInt(data, off);
         off = r.offset;
-        const dx = @as(f64, @floatFromInt(@as(i8, @bitCast(data[off])))) / 32.0;
+        const dx = @as(f64, @floatFromInt(@as(i8, @bitCast(try readU8Safe(data, off))))) / 32.0;
         off += 1;
-        const dy = @as(f64, @floatFromInt(@as(i8, @bitCast(data[off])))) / 32.0;
+        const dy = @as(f64, @floatFromInt(@as(i8, @bitCast(try readU8Safe(data, off))))) / 32.0;
         off += 1;
-        const dz = @as(f64, @floatFromInt(@as(i8, @bitCast(data[off])))) / 32.0;
+        const dz = @as(f64, @floatFromInt(@as(i8, @bitCast(try readU8Safe(data, off))))) / 32.0;
         off += 1;
         var yaw: ?f32 = null;
         var pitch: ?f32 = null;
         if (update_rotation) {
-            const yr = readAngle(data, off);
+            const yr = try readAngle(data, off);
             off = yr.offset;
-            const pr = readAngle(data, off);
+            const pr = try readAngle(data, off);
             off = pr.offset;
             yaw = yr.value;
             pitch = pr.value;
@@ -1238,9 +1295,9 @@ const MinecraftJavaClient = struct {
         var off = off_in;
         const r = try readVarInt(data, off);
         off = r.offset;
-        const yr = readAngle(data, off);
+        const yr = try readAngle(data, off);
         off = yr.offset;
-        const pr = readAngle(data, off);
+        const pr = try readAngle(data, off);
         off = pr.offset;
         self.entity_lock.lock();
         defer self.entity_lock.unlock();
@@ -1254,15 +1311,15 @@ const MinecraftJavaClient = struct {
         var off = off_in;
         const r = try readVarInt(data, off);
         off = r.offset;
-        const x = @as(f64, @floatFromInt(std.mem.readInt(i32, data[off..][0..4], .big))) / 32.0;
+        const x = @as(f64, @floatFromInt(try readI32Safe(data, off))) / 32.0;
         off += 4;
-        const y = @as(f64, @floatFromInt(std.mem.readInt(i32, data[off..][0..4], .big))) / 32.0;
+        const y = @as(f64, @floatFromInt(try readI32Safe(data, off))) / 32.0;
         off += 4;
-        const z = @as(f64, @floatFromInt(std.mem.readInt(i32, data[off..][0..4], .big))) / 32.0;
+        const z = @as(f64, @floatFromInt(try readI32Safe(data, off))) / 32.0;
         off += 4;
-        const yr = readAngle(data, off);
+        const yr = try readAngle(data, off);
         off = yr.offset;
-        const pr = readAngle(data, off);
+        const pr = try readAngle(data, off);
         off = pr.offset;
         self.entity_lock.lock();
         defer self.entity_lock.unlock();
@@ -1279,7 +1336,7 @@ const MinecraftJavaClient = struct {
         var off = off_in;
         const r = try readVarInt(data, off);
         off = r.offset;
-        const hr = readAngle(data, off);
+        const hr = try readAngle(data, off);
         self.entity_lock.lock();
         defer self.entity_lock.unlock();
         if (self.remote_players.getPtr(r.value)) |p| {
@@ -1290,22 +1347,24 @@ const MinecraftJavaClient = struct {
 
     fn handleChunkSingle(self: *MinecraftJavaClient, data: []const u8, off_in: usize) !void {
         var off = off_in;
-        const chunk_x = std.mem.readInt(i32, data[off..][0..4], .big);
+        const chunk_x = try readI32Safe(data, off);
         off += 4;
-        const chunk_z = std.mem.readInt(i32, data[off..][0..4], .big);
+        const chunk_z = try readI32Safe(data, off);
         off += 4;
-        const ground_up = data[off] != 0;
+        const ground_up = (try readU8Safe(data, off)) != 0;
         off += 1;
-        const primary_bitmask = std.mem.readInt(u16, data[off..][0..2], .big);
+        const primary_bitmask = try readU16Safe(data, off);
         off += 2;
         const r = try readVarInt(data, off);
         off = r.offset;
-        const chunk_data = data[off .. off + @as(usize, @intCast(r.value))];
+        const size: usize = @intCast(r.value);
+        const chunk_data = try sliceSafe(data, off, size);
         try self.applyChunk(chunk_data, chunk_x, chunk_z, primary_bitmask, 0, ground_up, true);
     }
 
     fn handleChunkBulk(self: *MinecraftJavaClient, data: []const u8, off_in: usize) !u32 {
         const body = data[off_in..];
+        if (body.len < 1) return error.PacketTooShort;
         const sky_light = body[0] != 0;
         var cursor: usize = 1;
         const r = try readVarInt(body, cursor);
@@ -1315,11 +1374,11 @@ const MinecraftJavaClient = struct {
         var metas = try self.alloc.alloc(struct { cx: i32, cz: i32, pbm: u16 }, n_chunks);
         defer self.alloc.free(metas);
         for (0..n_chunks) |i| {
-            const cx = std.mem.readInt(i32, body[cursor..][0..4], .big);
+            const cx = try readI32Safe(body, cursor);
             cursor += 4;
-            const cz = std.mem.readInt(i32, body[cursor..][0..4], .big);
+            const cz = try readI32Safe(body, cursor);
             cursor += 4;
-            const pbm = std.mem.readInt(u16, body[cursor..][0..2], .big);
+            const pbm = try readU16Safe(body, cursor);
             cursor += 2;
             metas[i] = .{ .cx = cx, .cz = cz, .pbm = pbm };
         }
@@ -1330,7 +1389,7 @@ const MinecraftJavaClient = struct {
             var sec_size = n_primary * (8192 + 2048);
             if (sky_light) sec_size += n_primary * 2048;
             sec_size += 256;
-            const chunk_raw = raw[raw_off .. raw_off + sec_size];
+            const chunk_raw = try sliceSafe(raw, raw_off, sec_size);
             raw_off += sec_size;
             try self.applyChunk(chunk_raw, m.cx, m.cz, m.pbm, 0, true, sky_light);
         }
@@ -1370,7 +1429,7 @@ const MinecraftJavaClient = struct {
 
     fn handleBlockChange(self: *MinecraftJavaClient, data: []const u8, off_in: usize) !void {
         var off = off_in;
-        const pos_long = std.mem.readInt(i64, data[off..][0..8], .big);
+        const pos_long = try readI64Safe(data, off);
         off += 8;
         const pos = unpackBlockPosition(pos_long);
         const r = try readVarInt(data, off);
@@ -1392,18 +1451,23 @@ const MinecraftJavaClient = struct {
 
     fn handleMultiBlockChange(self: *MinecraftJavaClient, data: []const u8, off_in: usize) !void {
         var off = off_in;
-        const chunk_x = std.mem.readInt(i32, data[off..][0..4], .big);
+        const chunk_x = try readI32Safe(data, off);
         off += 4;
-        const chunk_z = std.mem.readInt(i32, data[off..][0..4], .big);
+        const chunk_z = try readI32Safe(data, off);
         off += 4;
-        const record_count = std.mem.readInt(u16, data[off..][0..2], .big);
-        off += 2;
 
-        var i: u16 = 0;
+        // FIX: Record Count est un VarInt en protocole 47, PAS un u16 fixe.
+        // Le lire comme u16 désalignait tout le reste du paquet et
+        // provoquait un accès hors bornes -> panic -> crash du thread réseau.
+        const rc = try readVarInt(data, off);
+        off = rc.offset;
+        const record_count = rc.value;
+
+        var i: i32 = 0;
         while (i < record_count) : (i += 1) {
-            const horiz = data[off];
+            const horiz = try readU8Safe(data, off);
             off += 1;
-            const y = data[off];
+            const y = try readU8Safe(data, off);
             off += 1;
             const r = try readVarInt(data, off);
             off = r.offset;
@@ -1737,22 +1801,22 @@ const JavaLanServer = struct {
     fn handlePlayPacket(self: *JavaLanServer, pid: i32, data: []const u8, off_in: usize) !void {
         var off = off_in;
         if (pid == 0x07) {
-            const status = @as(i8, @bitCast(data[off]));
+            const status = @as(i8, @bitCast(try readU8Safe(data, off)));
             off += 1;
-            const pos_long = std.mem.readInt(i64, data[off..][0..8], .big);
+            const pos_long = try readI64Safe(data, off);
             off += 8;
-            const face = data[off];
+            const face = try readU8Safe(data, off);
             const pos = unpackBlockPosition(pos_long);
             if (status == 0 or status == 2) {
                 self.applyBlockUpdate(.{ .x = @intCast(pos.x), .y = @intCast(pos.y), .z = @intCast(pos.z) }, 0);
             }
             _ = face;
         } else if (pid == 0x08) {
-            const pos_long = std.mem.readInt(i64, data[off..][0..8], .big);
+            const pos_long = try readI64Safe(data, off);
             off += 8;
-            const face = data[off];
+            const face = try readU8Safe(data, off);
             off += 1;
-            const item_id = std.mem.readInt(i16, data[off..][0..2], .big);
+            const item_id = @as(i16, @bitCast(try readU16Safe(data, off)));
             off += 2;
             const pos = unpackBlockPosition(pos_long);
             if (face <= 5) {
@@ -2111,11 +2175,16 @@ const Game = struct {
 
     // ---- Connexion Java ----
     fn startJavaConnection(self: *Game, ip: []const u8, port: u16, username: []const u8) void {
-        @memcpy(self.java_last_ip[0..ip.len], ip);
-        self.java_last_ip_len = ip.len;
+        const ip_len = @min(ip.len, self.java_last_ip.len);
+        const username_len = @min(username.len, self.java_last_username.len);
+
+        @memcpy(self.java_last_ip[0..ip_len], ip[0..ip_len]);
+        self.java_last_ip_len = ip_len;
+
         self.java_last_port = port;
-        @memcpy(self.java_last_username[0..username.len], username);
-        self.java_last_username_len = username.len;
+
+        @memcpy(self.java_last_username[0..username_len], username[0..username_len]);
+        self.java_last_username_len = username_len;
 
         if (self.java_client) |jc| jc.disconnect();
 
@@ -2137,13 +2206,16 @@ const Game = struct {
         self.last_java_block_refresh = 0;
         self.java_block_burst_until = 0;
 
-        self.java_client = MinecraftJavaClient.init(self.alloc, ip, port, username, self.level, self.player) catch return;
-        self.java_client.?.connect() catch {};
-    }
+        self.java_client = MinecraftJavaClient.init(
+            self.alloc,
+            ip,
+            port,
+            username,
+            self.level,
+            self.player,
+        ) catch return;
 
-    fn reloadJavaNearbyChunks(self: *Game) void {
-        if (self.java_last_ip_len == 0) return;
-        self.startJavaConnection(self.java_last_ip[0..self.java_last_ip_len], self.java_last_port, self.java_last_username[0..self.java_last_username_len]);
+        self.java_client.?.connect() catch {};
     }
 
     fn getOrCreateJavaChunk(self: *Game, key: Pos3) *Chunk {
@@ -2213,16 +2285,40 @@ const Game = struct {
 
     fn javaLoadingDone(self: *Game) bool {
         const jc = self.java_client orelse return false;
-        if (jc.chunks_received.load(.seq_cst) < JAVA_LOADING_MIN_CHUNKS) return false;
+
+        // On attend d'avoir reçu suffisamment de chunks.
+        if (jc.chunks_received.load(.seq_cst) < JAVA_LOADING_MIN_CHUNKS) {
+            return false;
+        }
+
+        // On attend que le serveur ait fini d'envoyer les chunks pendant
+        // un petit moment avant de quitter l'écran de chargement.
         const last = jc.last_chunk_time.load(.seq_cst);
-        if (last == 0) return false;
-        if (@as(f64, @floatFromInt(std.time.milliTimestamp() - last)) / 1000.0 < JAVA_LOADING_IDLE_SECONDS) return false;
+        if (last == 0) {
+            return false;
+        }
+
+        if (@as(f64, @floatFromInt(std.time.milliTimestamp() - last)) / 1000.0 < JAVA_LOADING_IDLE_SECONDS) {
+            return false;
+        }
+
+        // IMPORTANT :
+        // Un chunk vide peut avoir dirty=false et model=null.
+        // model=null ne signifie donc PAS que le chunk n'est pas prêt.
+        //
+        // Le seul état qui signifie "ce chunk doit encore être construit"
+        // est dirty=true.
         var buf = std.ArrayList(*Chunk).init(self.alloc);
         defer buf.deinit();
+
         self.getJavaVisibleChunks(0, &buf);
+
         for (buf.items) |c| {
-            if (c.dirty or c.model == null) return false;
+            if (c.dirty) {
+                return false;
+            }
         }
+
         return true;
     }
 
@@ -2354,6 +2450,25 @@ const Game = struct {
         if (self.java_client) |jc| jc.disconnect();
         self.stopHostLanServices();
         ray.CloseWindow();
+    }
+
+    fn reloadJavaNearbyChunks(self: *Game) void {
+        if (self.java_client == null) return;
+
+        // Force le recalcul de la zone autour du joueur.
+        self.java_view_anchor = null;
+
+        // On repasse temporairement par le chargement
+        // pour reconstruire les chunks visibles.
+        self.java_loading = true;
+        self.java_loading_start = ray.GetTime();
+
+        // Marque tous les chunks Java actuellement chargés
+        // comme devant être reconstruits.
+        var it = self.java_chunks.valueIterator();
+        while (it.next()) |c| {
+            c.dirty = true;
+        }
     }
 
     fn handleInput(self: *Game, visible_buf: *std.ArrayList(*Chunk)) void {
@@ -2659,7 +2774,7 @@ const Game = struct {
             var built: u32 = 0;
             for (visible_buf.items) |c| {
                 if (built >= 4) break;
-                if (c.dirty or c.model == null) {
+                if (c.dirty) {
                     c.build(self.level, self.tex);
                     built += 1;
                 }
@@ -2673,7 +2788,7 @@ const Game = struct {
             var prepared: u32 = 0;
             self.getJavaVisibleChunks(0, visible_buf);
             for (visible_buf.items) |c| {
-                if (!c.dirty and c.model != null) prepared += 1;
+                if (!c.dirty) prepared += 1;
             }
             drawTextCentered("LOADING JAVA WORLD...", @divTrunc(WIDTH, 2), 260, 28, .{ .r = 255, .g = 220, .b = 120, .a = 255 });
             var buf1: [64]u8 = undefined;
@@ -2720,7 +2835,7 @@ const Game = struct {
             const budget: u32 = if (burst) 2 else 1;
             for (visible_buf.items) |c| {
                 if (rebuilds >= budget) break;
-                if (c.dirty or c.model == null) {
+                if (c.dirty) {
                     c.build(self.level, self.tex);
                     rebuilds += 1;
                 }
