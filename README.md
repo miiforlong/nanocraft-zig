@@ -25,15 +25,7 @@ Installer :
 
 ### 2. Ouvrir le bon terminal MSYS2
 
-Il faut ouvrir :
-
-**MSYS2 UCRT64**
-
-et non :
-
-- MSYS2 MSYS
-- MSYS2 MINGW64
-- MSYS2 CLANG64
+Il faut ouvrir **MSYS2 UCRT64**
 
 Le terminal doit afficher quelque chose ressemblant à :
 
@@ -118,19 +110,13 @@ On doit notamment retrouver :
 
 ### 6. Vérifier Zig 0.14.1
 
-NanoCraft utilise **Zig 0.14.1**.
+NanoCraft utilise **Zig 0.14.1** (trouvable sur <https://ziglang.org/download/>) .
 
-Le dossier doit contenir :
-
-```text
-zig-0.14.1/
-└── zig.exe
-```
 
 Depuis le dossier du projet, vérifier la version :
 
 ```bash
-zig-0.14.1/zig.exe version
+zig version
 ```
 
 Résultat attendu :
@@ -177,7 +163,6 @@ Le dossier doit notamment contenir :
 ```text
 nanocraft.zig
 terrain.png
-zig-0.14.1/
 ```
 
 ---
@@ -211,7 +196,7 @@ Les bibliothèques sont recherchées dans :
 Depuis le dossier du projet :
 
 ```bash
-zig-0.14.1/zig.exe build-exe nanocraft.zig -lc -I/ucrt64/include -L/ucrt64/lib -lraylib.dll -lglfw3.dll -lwinmm
+zig build-exe nanocraft.zig -lc -I/ucrt64/include -L/ucrt64/lib -lraylib.dll -lglfw3.dll -lwinmm
 ```
 
 Cette commande est la commande de référence pour compiler NanoCraft.
@@ -219,7 +204,7 @@ Cette commande est la commande de référence pour compiler NanoCraft.
 #### Explication
 
 ```text
-zig-0.14.1/zig.exe
+zig
 ```
 
 Utilise Zig 0.14.1.
@@ -296,10 +281,10 @@ Pour cette configuration de NanoCraft, on utilise :
 -lraylib.dll -lglfw3.dll
 ```
 
-La commande complète reste donc :
+La commande complète est donc :
 
 ```bash
-zig-0.14.1/zig.exe build-exe nanocraft.zig -lc -I/ucrt64/include -L/ucrt64/lib -lraylib.dll -lglfw3.dll -lwinmm
+zig build-exe nanocraft.zig -lc -I/ucrt64/include -L/ucrt64/lib -lraylib.dll -lglfw3.dll -lwinmm
 ```
 
 ---
@@ -336,7 +321,7 @@ Chercher GLFW :
 find /ucrt64 -iname "*glfw*.dll"
 ```
 
-Les DLL nécessaires doivent être accessibles par Windows lorsque :
+Les DLL nécessaires et terrain.png doivent être accessibles par Windows lorsque :
 
 ```text
 nanocraft.exe
@@ -344,7 +329,7 @@ nanocraft.exe
 
 est lancé.
 
-Une solution simple est de placer les DLL nécessaires directement à côté de :
+Une solution simple est de placer les DLL nécessaires et terrain.png directement à côté de :
 
 ```text
 nanocraft.exe
@@ -352,312 +337,3 @@ nanocraft.exe
 
 > Ne pas copier automatiquement tout le contenu de `/ucrt64/bin`. Seules les DLL nécessaires au programme doivent être rendues disponibles.
 
----
-
-### 13. Lancer NanoCraft depuis MSYS2
-
-Depuis le dossier du projet :
-
-```bash
-./nanocraft.exe
-```
-
-Le programme doit également pouvoir trouver :
-
-```text
-terrain.png
-```
-
-Il est donc recommandé de lancer le programme depuis le dossier contenant les ressources du jeu.
-
----
-
-### 14. Lancer NanoCraft depuis PowerShell
-
-Depuis PowerShell :
-
-```powershell
-cd C:\Users\%USERNAME%\Desktop\nanocraft-zig
-```
-
-Puis :
-
-```powershell
-.\nanocraft.exe
-```
-
-Les DLL nécessaires doivent également être accessibles à Windows.
-
----
-
-### 15. Vérification complète de l'installation
-
-#### Vérifier Zig
-
-```bash
-zig-0.14.1/zig.exe version
-```
-
-Résultat attendu :
-
-```text
-0.14.1
-```
-
-#### Vérifier Raylib
-
-```bash
-ls /ucrt64/include/raylib.h
-```
-
-#### Vérifier les bibliothèques Raylib
-
-```bash
-ls /ucrt64/lib/*raylib*
-```
-
-#### Vérifier les bibliothèques GLFW
-
-```bash
-ls /ucrt64/lib/*glfw*
-```
-
-#### Vérifier le fichier source
-
-```bash
-ls nanocraft.zig
-```
-
-#### Vérifier la texture
-
-```bash
-ls terrain.png
-```
-
----
-
-### 16. Procédure complète
-
-Une fois MSYS2, Raylib, GLFW et Zig 0.14.1 installés :
-
-```bash
-cd /c/Users/%USERNAME%/Desktop/nanocraft-zig
-
-zig-0.14.1/zig.exe version
-
-ls /ucrt64/include/raylib.h
-
-ls /ucrt64/lib/*raylib*
-
-ls /ucrt64/lib/*glfw*
-
-ls nanocraft.zig
-
-ls terrain.png
-
-zig-0.14.1/zig.exe build-exe nanocraft.zig -lc -I/ucrt64/include -L/ucrt64/lib -lraylib.dll -lglfw3.dll -lwinmm
-
-./nanocraft.exe
-```
-
----
-
-### 17. Erreur `raylib.h: No such file or directory`
-
-Si Zig affiche :
-
-```text
-raylib.h: No such file or directory
-```
-
-Vérifier :
-
-```bash
-ls /ucrt64/include/raylib.h
-```
-
-Si le fichier existe, vérifier que la commande de compilation contient :
-
-```text
--I/ucrt64/include
-```
-
-Si Raylib n'est pas installé :
-
-```bash
-pacman -S mingw-w64-ucrt-x86_64-raylib
-```
-
----
-
-### 18. Erreur `cannot find -lraylib.dll`
-
-Vérifier :
-
-```bash
-ls /ucrt64/lib/*raylib*
-```
-
-Puis :
-
-```bash
-ls /ucrt64/lib/libraylib.dll.a
-```
-
-Si Raylib n'est pas installé :
-
-```bash
-pacman -S mingw-w64-ucrt-x86_64-raylib
-```
-
----
-
-### 19. Erreur `cannot find -lglfw3.dll`
-
-Vérifier :
-
-```bash
-ls /ucrt64/lib/*glfw*
-```
-
-Puis :
-
-```bash
-ls /ucrt64/lib/libglfw3.dll.a
-```
-
-Si GLFW n'est pas installé :
-
-```bash
-pacman -S mingw-w64-ucrt-x86_64-glfw
-```
-
----
-
-### 20. Erreur `libraylib.dll` au lancement
-
-Si la compilation fonctionne mais que Windows affiche une erreur concernant :
-
-```text
-libraylib.dll
-```
-
-chercher la DLL :
-
-```bash
-find /ucrt64 -iname "*raylib*.dll"
-```
-
-Puis rendre cette DLL accessible à :
-
-```text
-nanocraft.exe
-```
-
-La solution la plus simple est généralement de placer la DLL à côté de l'exécutable.
-
----
-
-### 21. Erreur `root source file struct 'nanocraft' has no member named 'main'`
-
-Cette erreur :
-
-```text
-root source file struct 'nanocraft' has no member named 'main'
-```
-
-signifie que le fichier source ne contient pas de fonction principale :
-
-```zig
-pub fn main() !void {
-    // ...
-}
-```
-
-ou que le fichier `nanocraft.zig` est incomplet ou tronqué.
-
-Ce problème n'est pas lié à Raylib ou à MSYS2.
-
----
-
-### 22. Erreur `expected '}' found 'EOF'`
-
-Une erreur comme :
-
-```text
-error: expected '}', found 'EOF'
-```
-
-signifie qu'une accolade fermante manque dans le fichier Zig.
-
-Exemple :
-
-```zig
-const Example = struct {
-    fn test() void {
-        // ...
-    }
-};
-```
-
-Une structure doit être correctement fermée avec :
-
-```zig
-};
-```
-
-Si le fichier s'arrête brutalement au milieu du code, vérifier également que `nanocraft.zig` n'a pas été tronqué.
-
----
-
-### 23. Structure finale de l'environnement
-
-```text
-Windows
-│
-└── MSYS2
-    │
-    └── UCRT64
-        │
-        ├── /ucrt64/include
-        │   └── raylib.h
-        │
-        ├── /ucrt64/lib
-        │   ├── libraylib.a
-        │   ├── libraylib.dll.a
-        │   ├── libglfw3.a
-        │   └── libglfw3.dll.a
-        │
-        └── /ucrt64/bin
-            └── DLL nécessaires
-```
-
-Projet :
-
-```text
-nanocraft-zig/
-│
-├── nanocraft.zig
-├── terrain.png
-├── zig-0.14.1/
-│   └── zig.exe
-└── nanocraft.exe
-```
-
----
-
-### 24. Commande de référence
-
-La commande utilisée pour compiler cette version de NanoCraft est :
-
-```bash
-zig-0.14.1/zig.exe build-exe nanocraft.zig -lc -I/ucrt64/include -L/ucrt64/lib -lraylib.dll -lglfw3.dll -lwinmm
-```
-
-**Terminal requis : MSYS2 UCRT64**
-
-**Version Zig : 0.14.1**
-
-**Raylib : `mingw-w64-ucrt-x86_64-raylib`**
-
-**GLFW : `mingw-w64-ucrt-x86_64-glfw`**
